@@ -1,9 +1,31 @@
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
- # 0=all,1=filter INFO,2=filter WARNING,3=filter ERROR
 import streamlit as st
-import tensorflow as tf
-keras = tf.keras  # pyright: ignore[reportAttributeAccessIssue]
+
+# Set environment variables before any imports
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+os.environ['TF_NUM_INTEROP_THREADS'] = '1'
+os.environ['TF_NUM_INTRAOP_THREADS'] = '1'
+os.environ['OMP_NUM_THREADS'] = '1'
+
+# Try to import TensorFlow with error handling
+try:
+    import tensorflow as tf
+    tf.config.threading.set_inter_op_parallelism_threads(1)
+    tf.config.threading.set_intra_op_parallelism_threads(1)
+    
+    if hasattr(tf.compat.v1, 'disable_eager_execution'):
+        tf.compat.v1.disable_eager_execution()
+    
+    keras = tf.keras  # pyright: ignore[reportAttributeAccessIssue]
+    TF_AVAILABLE = True
+except Exception as e:
+    st.error(f"TensorFlow import failed: {e}")
+    st.info("The application will run with limited functionality.")
+    TF_AVAILABLE = False
+    keras = None
+    tf = None
 from PIL import Image
 import numpy as np
 import pandas as pd
@@ -18,29 +40,46 @@ VAL_IMAGES_DIR = BASE_DIR / "data" / "val"
 # === LOAD MODEL & LABELS ===
 @st.cache_resource
 def load_model():
-    if not MODEL_PATH.exists():
-        st.error(f"Model file not found: {MODEL_PATH}")
-        raise FileNotFoundError(str(MODEL_PATH))
-    model = keras.models.load_model(str(MODEL_PATH), compile=False)
-    # NOTE: Original model task likely regression for 3 scores; keep simple compile for predict usage.
+    if not TF_AVAILABLE or keras is None:
+        st.error("TensorFlow is not available. Model loading disabled.")
+        return None
+        
     try:
-        model.compile(optimizer='adam', loss='mse', metrics=['mae'])
-    except Exception:
-        # If model already compiled or incompatible just ignore.
-        pass
-    return model
+        if not MODEL_PATH.exists():
+            st.error(f"Model file not found: {MODEL_PATH}")
+            st.info("Please ensure the 'models/best_model.h5' file is present in your deployment.")
+            return None
+        
+        model = keras.models.load_model(str(MODEL_PATH), compile=False)  # pyright: ignore[reportOptionalMemberAccess]
+        # NOTE: Original model task likely regression for 3 scores; keep simple compile for predict usage.
+        try:
+            model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+        except Exception as e:
+            # If model already compiled or incompatible just warn and continue
+            st.warning(f"Model compilation warning: {e}")
+        return model
+    except Exception as e:
+        st.error(f"Error loading model: {e}")
+        return None
 
 @st.cache_data
 def load_val_labels():
-    if not VAL_LABELS_CSV.exists():
-        st.error(f"Validation labels CSV not found: {VAL_LABELS_CSV}")
+    try:
+        if not VAL_LABELS_CSV.exists():
+            st.warning(f"Validation labels CSV not found: {VAL_LABELS_CSV}")
+            st.info("Some features will be limited without validation labels.")
+            return pd.DataFrame(columns=['image_filename','durability_score','chemical_safety_score','ergonomics_score'])
+        
+        df = pd.read_csv(VAL_LABELS_CSV)
+        # Normalize filenames in CSV index: strip whitespace and lowercase
+        df['image_filename'] = df['image_filename'].str.strip().str.lower()
+        df.set_index('image_filename', inplace=True)
+        return df
+    except Exception as e:
+        st.error(f"Error loading validation labels: {e}")
         return pd.DataFrame(columns=['image_filename','durability_score','chemical_safety_score','ergonomics_score'])
-    df = pd.read_csv(VAL_LABELS_CSV)
-    # Normalize filenames in CSV index: strip whitespace and lowercase
-    df['image_filename'] = df['image_filename'].str.strip().str.lower()
-    df.set_index('image_filename', inplace=True)
-    return df
 
+# Initialize model and labels with proper error handling
 model = load_model()
 val_labels = load_val_labels()
 
@@ -55,15 +94,30 @@ def feedback(score):
         return "Needs Improvement"
 
 def preprocess_image(uploaded_file):
-    image = Image.open(uploaded_file).convert("RGB")
-    img_resized = image.resize((224, 224))
-    arr = np.array(img_resized).astype("float32") / 255.0
-    arr = np.expand_dims(arr, axis=0)
-    return image, arr
+    try:
+        image = Image.open(uploaded_file).convert("RGB")
+        img_resized = image.resize((224, 224))
+        arr = np.array(img_resized).astype("float32") / 255.0
+        arr = np.expand_dims(arr, axis=0)
+        return image, arr
+    except Exception as e:
+        st.error(f"Error processing image: {e}")
+        # Return a default image and array
+        default_image = Image.new('RGB', (224, 224), color='white')
+        default_arr = np.ones((1, 224, 224, 3), dtype=np.float32) * 0.5
+        return default_image, default_arr
 
 def predict_scores(arr):
-    pred = model.predict(arr, verbose=0)
-    return pred[0]
+    if not TF_AVAILABLE or model is None:
+        st.error("Model not available. Cannot make predictions.")
+        return [0.0, 0.0, 0.0]  # Return default scores
+    
+    try:
+        pred = model.predict(arr, verbose=0)
+        return pred[0]
+    except Exception as e:
+        st.error(f"Error making prediction: {e}")
+        return [0.0, 0.0, 0.0]
 
 def display_comparison(image_name, pred_scores):
     normalized_name = image_name.strip().lower()
@@ -90,6 +144,31 @@ def display_comparison(image_name, pred_scores):
 
 # === SIDEBAR NAVIGATION ===
 st.sidebar.markdown("### Navigation")
+
+# Add status indicators
+st.sidebar.markdown("### System Status")
+if model is not None:
+    st.sidebar.success(" Model: Loaded")
+else:
+    st.sidebar.error(" Model: Not Available")
+
+if not val_labels.empty:
+    st.sidebar.success("Validation Data: Available")
+else:
+    st.sidebar.warning("Validation Data: Limited")
+
+if VAL_IMAGES_DIR.exists():
+    try:
+        image_count = len([f for f in os.listdir(VAL_IMAGES_DIR) if f.lower().endswith(('.jpg', '.jpeg', '.png'))])
+        if image_count > 0:
+            st.sidebar.success(f"✅ Sample Images: {image_count} available")
+        else:
+            st.sidebar.warning("Sample Images: None found")
+    except:
+        st.sidebar.warning("Sample Images: Directory inaccessible")
+else:
+    st.sidebar.warning(" Sample Images: Directory not found")
+
 menu = st.sidebar.radio(
     "Go to",
     [
@@ -123,6 +202,12 @@ if menu == "Upload & Predict":
 
     st.markdown("---")
 
+    # Check if model is available
+    if model is None:
+        st.error("⚠️ Model is not available. Please ensure the model file exists in your deployment.")
+        st.info("Without the model, predictions cannot be made. Please check your deployment configuration.")
+        st.stop()
+
     uploaded_file = st.file_uploader("Upload bottle image (jpg, jpeg, png)", type=["jpg", "jpeg", "png"])
     if uploaded_file is not None:
         filename_norm = uploaded_file.name.strip().lower()
@@ -133,10 +218,24 @@ if menu == "Upload & Predict":
 
 elif menu == "Compare Bottles":
     st.markdown("<h2>Compare Bottles</h2>", unsafe_allow_html=True)
+    
+    # Check if model is available
+    if model is None:
+        st.error("⚠️ Model is not available. Cannot perform bottle comparison.")
+        st.info("Please ensure the model file exists in your deployment.")
+        st.stop()
+    
     if not VAL_IMAGES_DIR.exists():
         st.error(f"Validation images directory not found: {VAL_IMAGES_DIR}")
+        st.info("This feature requires validation images to be present in the deployment.")
         st.stop()
-    image_files = [f for f in os.listdir(VAL_IMAGES_DIR) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+        
+    try:
+        image_files = [f for f in os.listdir(VAL_IMAGES_DIR) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+    except Exception as e:
+        st.error(f"Error accessing validation images: {e}")
+        st.stop()
+        
     if not image_files:
         st.warning("No images found in validation directory.")
         st.stop()
@@ -153,13 +252,21 @@ elif menu == "Compare Bottles":
             st.error(f"Cannot find image file {image_name}")
             return None, [0, 0, 0]
 
-        image_path = os.path.join(VAL_IMAGES_DIR, matched_file)
-        image = Image.open(image_path).convert("RGB")
-        img_resized = image.resize((224, 224))
-        arr = np.array(img_resized).astype("float32") / 255.0
-        arr = np.expand_dims(arr, axis=0)
-        pred = model.predict(arr)
-        return image, pred[0]
+        if model is None:
+            st.error("Model not loaded. Cannot make predictions.")
+            return None, [0, 0, 0]
+
+        try:
+            image_path = os.path.join(VAL_IMAGES_DIR, matched_file)
+            image = Image.open(image_path).convert("RGB")
+            img_resized = image.resize((224, 224))
+            arr = np.array(img_resized).astype("float32") / 255.0
+            arr = np.expand_dims(arr, axis=0)
+            pred = model.predict(arr)
+            return image, pred[0]
+        except Exception as e:
+            st.error(f"Error processing image {image_name}: {e}")
+            return None, [0, 0, 0]
 
     with col1:
         st.subheader("First Bottle")
@@ -177,6 +284,18 @@ elif menu == "Compare Bottles":
 
 elif menu == "Evaluation Metrics":
     st.markdown("<h2>Evaluation Metrics</h2>", unsafe_allow_html=True)
+    
+    # Check if model and validation data are available
+    if model is None:
+        st.error("⚠️ Model is not available. Cannot compute evaluation metrics.")
+        st.info("Please ensure the model file exists in your deployment.")
+        st.stop()
+    
+    if val_labels.empty:
+        st.warning("⚠️ Validation labels are not available. Cannot compute evaluation metrics.")
+        st.info("This feature requires validation labels to be present in the deployment.")
+        st.stop()
+    
     st.write("Binary classification style evaluation of each score using a configurable threshold (>= threshold => Positive).")
 
     # Threshold selector
@@ -229,7 +348,9 @@ elif menu == "Evaluation Metrics":
         if debug and (missing > 0 or load_errors > 0):
             st.info(f"📊 Image loading stats: {len(image_arrays)} loaded, {missing} files not found, {load_errors} load errors out of {total} total labels")
 
-        if not image_arrays:
+        if not image_arrays or model is None:
+            if model is None:
+                st.error("Model not loaded. Cannot compute evaluation metrics.")
             st.session_state['eval_pred_cache'] = {
                 'y_true': np.empty((0,3)),
                 'y_pred': np.empty((0,3)),
