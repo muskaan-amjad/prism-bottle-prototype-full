@@ -1,0 +1,34 @@
+{
+	"categories": {
+		"Wine Bottle": {
+			"durability": 9,
+			"chemical_safety": 9,
+			"ergonomics": 6
+		},
+		"Water Bottle": {
+			"durability": 7,
+			"chemical_safety": 8,
+			"ergonomics": 9
+		},
+		"Soda Bottle": {
+			"durability": 6,
+			"chemical_safety": 7,
+			"ergonomics": 8
+		},
+		"Plastic Bottles": {
+			"durability": 5,
+			"chemical_safety": 6,
+			"ergonomics": 8
+		},
+		"Beer Bottles": {
+			"durability": 8,
+			"chemical_safety": 9,
+			"ergonomics": 7
+		}
+	},
+	"settings": {
+		"images_per_category": 5000,
+		"image_filename_format": "{:08d}.jpg",
+		"output_filename": "bottle_labels_essential_trio.csv"
+	}
+}

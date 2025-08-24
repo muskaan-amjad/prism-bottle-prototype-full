@@ -1,0 +1,13 @@
+pandas>=2.0,<3.0
+scikit-learn>=1.4,<2.0
+
+pathlib2>=2.3.7; python_version<"3.4"
+
+# Dashboard runtime dependencies
+numpy>=1.24
+Pillow>=10.0
+streamlit>=1.30
+tensorflow>=2.12 ; platform_system!="Darwin"
+tensorflow-macos>=2.12 ; platform_system=="Darwin"
+tensorflow-metal>=1.1 ; platform_system=="Darwin"
+
