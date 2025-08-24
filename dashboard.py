@@ -1,5 +1,6 @@
 import os
-os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # 0=all,1=filter INFO,2=filter WARNING,3=filter ERROR
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+ # 0=all,1=filter INFO,2=filter WARNING,3=filter ERROR
 import streamlit as st
 import tensorflow as tf
 keras = tf.keras  # pyright: ignore[reportAttributeAccessIssue]
